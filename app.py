@@ -7,12 +7,16 @@ PDF Reader RAG - Streamlit + FAISS + Groq
 import io
 import os
 
-import faiss
 import numpy as np
 import streamlit as st
 from fastembed import TextEmbedding
 from groq import Groq
 from pypdf import PdfReader
+
+try:
+    import faiss
+except ImportError:  # faiss install na ho to numpy se search chalega
+    faiss = None
 
 DEFAULT_PDF = "engro_annual_report_2024.pdf"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
@@ -53,9 +57,12 @@ def build_index(pdf_bytes: bytes):
         return None, [], len(reader.pages)
 
     vecs = np.array(list(get_embedder().embed([c["text"] for c in chunks])), dtype="float32")
-    faiss.normalize_L2(vecs)
-    index = faiss.IndexFlatIP(vecs.shape[1])
-    index.add(vecs)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    if faiss is not None:
+        index = faiss.IndexFlatIP(vecs.shape[1])
+        index.add(vecs)
+    else:
+        index = vecs  # numpy fallback
     return index, chunks, len(reader.pages)
 
 
@@ -93,7 +100,7 @@ if index is None:
     st.error("Is PDF se text nahi nikla (shayad scanned/image PDF hai).")
     st.stop()
 
-st.caption(f"📎 {doc_name} • {n_pages} pages • {len(chunks)} chunks")
+st.caption(f"📎 {doc_name} • {n_pages} pages • {len(chunks)} chunks • search: {'FAISS' if faiss is not None else 'numpy (faiss not installed)'}")
 
 # ---------- Sawal-jawab ----------
 top_k = st.sidebar.slider("Retrieved chunks", 2, 10, 5)
@@ -106,8 +113,13 @@ if question:
         st.stop()
 
     q_vec = np.array(list(get_embedder().embed([question])), dtype="float32")
-    faiss.normalize_L2(q_vec)
-    scores, ids = index.search(q_vec, top_k)
+    q_vec /= np.linalg.norm(q_vec, axis=1, keepdims=True)
+    if faiss is not None:
+        scores, ids = index.search(q_vec, top_k)
+    else:
+        sims = index @ q_vec[0]
+        top = np.argsort(-sims)[:top_k]
+        scores, ids = np.array([sims[top]]), np.array([top])
     hits = [(float(s), chunks[i]) for s, i in zip(scores[0], ids[0])]
 
     context = "\n\n".join(f"[Page {h['page']}]\n{h['text']}" for _, h in hits)
