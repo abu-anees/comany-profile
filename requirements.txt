@@ -1,6 +1,7 @@
-   streamlit
-   pypdf
-   faiss-cpu
-   numpy
-   fastembed
-   groq
+streamlit
+pypdf
+fonttools
+faiss-cpu
+numpy
+fastembed
+google-genai
