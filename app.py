@@ -1,5 +1,5 @@
 """
-PDF Reader RAG - Streamlit + FAISS + Groq
+PDF Reader RAG - Streamlit + FAISS + Google Gemini
 - Default: repo mein rakhi PDF (engro_annual_report_2024.pdf)
 - Ya sidebar se koi bhi apni PDF upload karo
 - Index app khud banati hai (alag index.faiss ki zarurat nahi)
@@ -10,7 +10,8 @@ import os
 import numpy as np
 import streamlit as st
 from fastembed import TextEmbedding
-from groq import Groq
+from google import genai
+from google.genai import types
 from pypdf import PdfReader
 
 try:
@@ -20,8 +21,8 @@ except ImportError:  # faiss install na ho to numpy se search chalega
 
 DEFAULT_PDF = "engro_annual_report_2024.pdf"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-GROQ_MODEL = "llama-3.3-70b-versatile"  # console.groq.com par current naam check karein
-CHUNK_SIZE = 800
+GEMINI_MODEL = "gemini-flash-latest"  # hamesha current Flash model (free tier)
+CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 
 st.set_page_config(page_title="PDF Reader RAG", page_icon="📄")
@@ -56,7 +57,13 @@ def build_index(pdf_bytes: bytes):
     if not chunks:
         return None, [], len(reader.pages)
 
-    vecs = np.array(list(get_embedder().embed([c["text"] for c in chunks])), dtype="float32")
+    texts = [c["text"] for c in chunks]
+    emb = get_embedder()
+    parts = []
+    for i in range(0, len(texts), 64):  # chhoti batches = kam memory
+        batch = texts[i:i + 64]
+        parts.append(np.array(list(emb.embed(batch, batch_size=16)), dtype="float32"))
+    vecs = np.vstack(parts)
     vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
     if faiss is not None:
         index = faiss.IndexFlatIP(vecs.shape[1])
@@ -66,10 +73,13 @@ def build_index(pdf_bytes: bytes):
     return index, chunks, len(reader.pages)
 
 
-def get_groq_client():
-    key = st.secrets.get("GROQ_API_KEY") if hasattr(st, "secrets") else None
-    key = key or os.environ.get("GROQ_API_KEY")
-    return Groq(api_key=key) if key else None
+def get_client():
+    try:
+        key = st.secrets.get("GEMINI_API_KEY")
+    except Exception:
+        key = None
+    key = key or os.environ.get("GEMINI_API_KEY")
+    return genai.Client(api_key=key) if key else None
 
 
 # ---------- PDF choose karo ----------
@@ -107,9 +117,9 @@ top_k = st.sidebar.slider("Retrieved chunks", 2, 10, 5)
 question = st.text_input("Is PDF ke baare mein sawal likhein:")
 
 if question:
-    client = get_groq_client()
+    client = get_client()
     if client is None:
-        st.error("GROQ_API_KEY set nahi hai. Streamlit app Settings > Secrets mein add karein.")
+        st.error("GEMINI_API_KEY set nahi hai. Streamlit app Settings > Secrets mein add karein.")
         st.stop()
 
     q_vec = np.array(list(get_embedder().embed([question])), dtype="float32")
@@ -123,22 +133,22 @@ if question:
     hits = [(float(s), chunks[i]) for s, i in zip(scores[0], ids[0])]
 
     context = "\n\n".join(f"[Page {h['page']}]\n{h['text']}" for _, h in hits)
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You answer questions strictly from the provided PDF context. "
-                "Mention page numbers. If the answer is not in the context, say you could not find it. "
-                "Reply in the same language as the question."
-            ),
-        },
-        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
-    ]
-    with st.spinner("Jawab bana raha hoon..."):
-        resp = client.chat.completions.create(model=GROQ_MODEL, messages=messages, max_tokens=500)
-
-    st.subheader("Answer")
-    st.write(resp.choices[0].message.content)
+    system_text = (
+        "You answer questions strictly from the provided PDF context. "
+        "Mention page numbers. If the answer is not in the context, say you could not find it. "
+        "Reply in the same language as the question."
+    )
+    try:
+        with st.spinner("Jawab bana raha hoon..."):
+            resp = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=f"Context:\n{context}\n\nQuestion: {question}",
+                config=types.GenerateContentConfig(system_instruction=system_text, max_output_tokens=1500),
+            )
+        st.subheader("Answer")
+        st.write(resp.text)
+    except Exception as e:
+        st.warning(f"Gemini se jawab nahi bana ({type(e).__name__}): {str(e)[:200]}")
 
     st.subheader("Sources")
     for score, h in hits:
