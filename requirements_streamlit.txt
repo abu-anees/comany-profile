@@ -1,6 +1,6 @@
-streamlit
-pypdf
-faiss-cpu
-numpy
-fastembed
-groq
+   streamlit
+   pypdf
+   faiss-cpu
+   numpy
+   fastembed
+   groq
